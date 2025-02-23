@@ -1,133 +1,56 @@
-name: Persistent Tailscale Connection
+name: CI
 
-on: [workflow_dispatch]
+on: [push, workflow_dispatch]
 
 jobs:
-  setup_and_maintain:
-    runs-on: self-hosted  # Use a self-hosted runner for 24/7 operation
+  build:
+    runs-on: windows-latest
+
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
-
-    - name: Install Tailscale (Cached)
-      id: install-tailscale
-      shell: bash
+    - name: Install Tailscale
+      shell: powershell
       run: |
-        # Use a hash of the installation script URL as a cache key
-        cache_key="tailscale-install-$(curl -sSL https://tailscale.com/install.sh | sha256sum | awk '{print $1}')"
-        if ! command -v tailscale &> /dev/null; then  # Check if already installed
-          echo "::save-state name=cache-hit::false"
-          curl -fsSL https://tailscale.com/install.sh | sh
-          if [ $? -ne 0 ]; then
-            echo "Tailscale installation failed."
-            exit 1
-          fi
-        else
-          echo "::save-state name=cache-hit::true"
-          echo "Tailscale already installed, skipping installation."
-        fi
-        echo "cache_key=$cache_key" >> $GITHUB_OUTPUT
+        Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-ipn-setup-latest.exe" -OutFile "tailscale-setup.exe"
+        Start-Process -FilePath ".\tailscale-setup.exe" -ArgumentList "/S" -Wait  # Silent install
+        Start-Sleep -Seconds 10 # Give it some time to finish installation
 
-    - name: Restore Tailscale Cache (If Available)
-      if: steps.install-tailscale.outputs.cache-hit == 'false'
-      uses: actions/cache@v4
-      with:
-        path: /usr/local/bin/tailscale  # Cache the executable (and any related config)
-        key: ${{ steps.install-tailscale.outputs.cache_key }}
-        restore-keys: |
-          tailscale-install-
 
-    - name: Authenticate Tailscale (Optimized)
-      shell: bash
+    - name: Authenticate Tailscale
+      shell: powershell
       run: |
-        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gha-runner-${{ github.run_id }} --accept-routes=false --accept-dns=false --force-reauth  # Use --force-reauth
-      env:
-        TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        #Start tailscale service
+        Start-Service -Name "Tailscale"
+        # Authenticate using the Tailscale auth key (as a secret).  Much better than interactive login.
+        tailscale up --authkey ${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gh-runner-${{ github.run_id }} --advertise-exit-node=false --advertise-routes=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16  --accept-routes=true
 
-    - name: Display Connection Info
-      shell: bash
+    - name: Get Tailscale IP
+      shell: powershell
+      id: get-ip
       run: |
-        tailscaleIP=$(tailscale ip -4)
-        echo "=== Tailscale Connection Information ==="
-        echo "IP Address: $tailscaleIP"
-        echo "Username: ubuntu" # Default username for Ubuntu runners
-        echo "Password: <Use RDP client to enter password>" # Password is set as a secret
-        echo "`nTo connect via Remote Desktop Connection (or compatible RDP client):"
-        echo "  1. Open your Remote Desktop Connection tool."
-        echo "  2. Enter the IP Address shown above."
-        echo "  3. When prompted, use username 'ubuntu' and the password you set in the RDP_PASSWORD secret."
-        echo "`nUse 'tailscale status' to verify connection:"
-        tailscale status
+        $tailscaleStatus = tailscale status --json
+        $tailscaleStatus = $tailscaleStatus | ConvertFrom-Json
+        $tailscaleIP = $tailscaleStatus.Self.TailscaleIPs[0]  # Get the first Tailscale IP (usually the relevant one)
+        Write-Host "Tailscale IP: $tailscaleIP"
+        echo "::set-output name=tailscale_ip::$tailscaleIP"
 
-    - name: Install and Configure xRDP (Cached and Optimized)
-      id: install-xrdp
-      shell: bash
+
+    - name: Enable RDP and Set Firewall Rules
+      shell: powershell
       run: |
-        # Use a hash as part of the cache key
-        cache_key="xrdp-install-$(date +%s)" #date +%s use epoch time, good enough for simple cache invalidation
-        if ! dpkg -l xrdp | grep -q '^ii'; then # Check if xrdp is already installed
-          echo "::save-state name=cache-hit::false"
-          sudo apt-get update
-          sudo apt-get install -y xrdp
-          sudo systemctl enable xrdp --now
-        else
-          echo "::save-state name=cache-hit::true"
-          echo "xRDP already installed, skipping installation."
-        fi
-        echo "cache_key=$cache_key" >> $GITHUB_OUTPUT
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
+        Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "P@ssw0rd!" -Force)
+        net user runneradmin "P@ssw0rd!"  # Also set the password with net user (sometimes Set-LocalUser doesn't apply immediately)
 
-    - name: Restore xRDP Cache
-      if: steps.install-xrdp.outputs.cache-hit == 'false'
-      uses: actions/cache@v4
-      with:
-        path: |
-          /etc/xrdp  # Cache config files
-          /usr/sbin/xrdp #and relevant binaries
-        key: ${{ steps.install-xrdp.outputs.cache_key }}
-        restore-keys: |
-          xrdp-install-
-
-    - name: Configure xRDP User (Optimized)
-      shell: bash
+    - name: Keep Workflow Alive
+      shell: pwsh # Use PowerShell Core for improved compatibility with `Start-Sleep`
       run: |
-        # 1. Verify sudo is working
-        sudo whoami || { echo "Error: sudo command failed. Permissions issue?"; exit 1; }
-
-        # 2. Encrypt the password *once* outside the loop
-        encrypted_password=$(openssl passwd -crypt "${{ secrets.RDP_PASSWORD }}")
-        if [ $? -ne 0 ]; then
-            echo "Error: openssl password encryption failed."
-            exit 1
-        fi
-
-        # 3. Use the pre-encrypted password with chpasswd -e
-        echo "ubuntu:$encrypted_password" | sudo chpasswd -e
-
-        if [ $? -ne 0 ]; then
-          echo "Password change failed. Investigate PAM or permissions."
-          cat /var/log/auth.log # Check auth logs for clues if available
-          exit 1 # Exit if password change fails
-        fi
-
-        # XWrapper and startwm.sh changes (these are idempotent - no need to check first)
-        sudo sed -i 's/allowed_users=console/allowed_users=anybody/' /etc/X11/Xwrapper.config
-        sudo sed -i 's/#xfce_session/xfce_session/' /etc/xrdp/startwm.sh
-
-    - name: Maintain Tailscale Connection (Faster Checks)
-      shell: bash
-      run: |
-        echo "Maintaining Tailscale connection indefinitely..."
-        while true; do
-            # Use `tailscale status --json` for faster and more reliable parsing
-            tailscaleStatus=$(tailscale status --json 2>&1)
-            if ! echo "$tailscaleStatus" | jq -e '.BackendState == "Running"' > /dev/null; then
-                echo "Tailscale connection lost or not running. Attempting to reconnect..."
-                sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gha-runner-${{ github.run_id }} --accept-routes=false --accept-dns=false --force-reauth
-            fi
-            sleep 60  # Check connection every 60 seconds (adjust as needed, but faster is better)
-        done
-
-    - name: Disconnect Tailscale (Cleanup)
-      if: always() # Always disconnect, regardless of trigger
-      shell: bash
-      run: sudo tailscale down
+        Write-Host "RDP to: ${{ steps.get-ip.outputs.tailscale_ip }}:3389"
+        Write-Host "Username: runneradmin"
+        Write-Host "Password: P@ssw0rd!"
+        Write-Host "Workflow running indefinitely.  Manually cancel the workflow to stop."
+        while ($true) {
+          Start-Sleep -Seconds 3600  # Sleep for 1 hour (3600 seconds) and then check again.  This keeps the job alive.
+          Write-Host "Still running..."
+        }
