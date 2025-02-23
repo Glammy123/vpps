@@ -9,19 +9,38 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    - name: Install Tailscale
+    - name: Install Tailscale (Cached)
+      id: install-tailscale
       shell: bash
       run: |
-        curl -fsSL https://tailscale.com/install.sh | sh
-        if [ $? -ne 0 ]; then
-          echo "Tailscale installation failed."
-          exit 1
+        # Use a hash of the installation script URL as a cache key
+        cache_key="tailscale-install-$(curl -sSL https://tailscale.com/install.sh | sha256sum | awk '{print $1}')"
+        if ! command -v tailscale &> /dev/null; then  # Check if already installed
+          echo "::save-state name=cache-hit::false"
+          curl -fsSL https://tailscale.com/install.sh | sh
+          if [ $? -ne 0 ]; then
+            echo "Tailscale installation failed."
+            exit 1
+          fi
+        else
+          echo "::save-state name=cache-hit::true"
+          echo "Tailscale already installed, skipping installation."
         fi
+        echo "cache_key=$cache_key" >> $GITHUB_OUTPUT
 
-    - name: Authenticate Tailscale
+    - name: Restore Tailscale Cache (If Available)
+      if: steps.install-tailscale.outputs.cache-hit == 'false'
+      uses: actions/cache@v4
+      with:
+        path: /usr/local/bin/tailscale  # Cache the executable (and any related config)
+        key: ${{ steps.install-tailscale.outputs.cache_key }}
+        restore-keys: |
+          tailscale-install-
+
+    - name: Authenticate Tailscale (Optimized)
       shell: bash
       run: |
-        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gha-runner-${{ github.run_id }} --accept-routes=false --accept-dns=false
+        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gha-runner-${{ github.run_id }} --accept-routes=false --accept-dns=false --force-reauth  # Use --force-reauth
       env:
         TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
 
@@ -40,64 +59,72 @@ jobs:
         echo "`nUse 'tailscale status' to verify connection:"
         tailscale status
 
-    - name: Install and Configure xRDP (Optional - for GUI access)
+    - name: Install and Configure xRDP (Cached and Optimized)
+      id: install-xrdp
       shell: bash
       run: |
-        sudo apt-get update
-        sudo apt-get install -y xrdp
-        sudo systemctl enable xrdp --now
-
-        # Debugging & Fix Attempts for chpasswd Error:
-        echo "Attempting to set password for ubuntu user..."
-
-        # 1. Verify sudo is working (basic command)
-        sudo whoami
-        if [ $? -ne 0 ]; then
-          echo "Error: sudo command failed. Permissions issue?"
-          exit 1
-        fi
-        echo "sudo command successful."
-
-        # 2. Try chpasswd with NO options (plain text password)
-        echo "ubuntu:${{ secrets.RDP_PASSWORD }}" | sudo chpasswd
-        if [ $? -eq 0 ]; then
-          echo "Password changed successfully (plain text)."
+        # Use a hash as part of the cache key
+        cache_key="xrdp-install-$(date +%s)" #date +%s use epoch time, good enough for simple cache invalidation
+        if ! dpkg -l xrdp | grep -q '^ii'; then # Check if xrdp is already installed
+          echo "::save-state name=cache-hit::false"
+          sudo apt-get update
+          sudo apt-get install -y xrdp
+          sudo systemctl enable xrdp --now
         else
-          echo "Password change failed (plain text). Trying -e (encrypted)..."
+          echo "::save-state name=cache-hit::true"
+          echo "xRDP already installed, skipping installation."
+        fi
+        echo "cache_key=$cache_key" >> $GITHUB_OUTPUT
 
-          # 3. Try chpasswd with -e (encrypted password) - REQUIRES SEPARATE ENCRYPTION STEP
-          # First, create an encrypted password using openssl:
-          encrypted_password=$(openssl passwd -crypt "${{ secrets.RDP_PASSWORD }}")
-          if [ $? -ne 0 ]; then
+    - name: Restore xRDP Cache
+      if: steps.install-xrdp.outputs.cache-hit == 'false'
+      uses: actions/cache@v4
+      with:
+        path: |
+          /etc/xrdp  # Cache config files
+          /usr/sbin/xrdp #and relevant binaries
+        key: ${{ steps.install-xrdp.outputs.cache_key }}
+        restore-keys: |
+          xrdp-install-
+
+    - name: Configure xRDP User (Optimized)
+      shell: bash
+      run: |
+        # 1. Verify sudo is working
+        sudo whoami || { echo "Error: sudo command failed. Permissions issue?"; exit 1; }
+
+        # 2. Encrypt the password *once* outside the loop
+        encrypted_password=$(openssl passwd -crypt "${{ secrets.RDP_PASSWORD }}")
+        if [ $? -ne 0 ]; then
             echo "Error: openssl password encryption failed."
             exit 1
-          fi
-          echo "Encrypted password generated."
-          echo "ubuntu:$encrypted_password" | sudo chpasswd -e # Use -e for encrypted input
-
-          if [ $? -eq 0 ]; then
-            echo "Password changed successfully (encrypted)."
-          else
-            echo "Password change failed (encrypted).  Investigate PAM or permissions."
-            cat /var/log/auth.log # Check auth logs for clues if available
-            exit 1 # Exit if all attempts fail
-          fi
         fi
 
+        # 3. Use the pre-encrypted password with chpasswd -e
+        echo "ubuntu:$encrypted_password" | sudo chpasswd -e
+
+        if [ $? -ne 0 ]; then
+          echo "Password change failed. Investigate PAM or permissions."
+          cat /var/log/auth.log # Check auth logs for clues if available
+          exit 1 # Exit if password change fails
+        fi
+
+        # XWrapper and startwm.sh changes (these are idempotent - no need to check first)
         sudo sed -i 's/allowed_users=console/allowed_users=anybody/' /etc/X11/Xwrapper.config
         sudo sed -i 's/#xfce_session/xfce_session/' /etc/xrdp/startwm.sh
 
-    - name: Maintain Tailscale Connection
+    - name: Maintain Tailscale Connection (Faster Checks)
       shell: bash
       run: |
         echo "Maintaining Tailscale connection indefinitely..."
         while true; do
-            tailscaleStatus=$(tailscale status 2>&1)
-            if [[ $tailscaleStatus != *"logged in"* ]]; then
-                echo "Tailscale connection lost or not logged in. Attempting to reconnect..."
-                sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gha-runner-${{ github.run_id }} --accept-routes=false --accept-dns=false
+            # Use `tailscale status --json` for faster and more reliable parsing
+            tailscaleStatus=$(tailscale status --json 2>&1)
+            if ! echo "$tailscaleStatus" | jq -e '.BackendState == "Running"' > /dev/null; then
+                echo "Tailscale connection lost or not running. Attempting to reconnect..."
+                sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gha-runner-${{ github.run_id }} --accept-routes=false --accept-dns=false --force-reauth
             fi
-            sleep 300  # Check connection every 5 minutes
+            sleep 60  # Check connection every 60 seconds (adjust as needed, but faster is better)
         done
 
     - name: Disconnect Tailscale (Cleanup)
