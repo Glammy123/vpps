@@ -51,7 +51,7 @@ jobs:
     timeout-minutes: 65
     steps:
       - name: Reinstall Tailscale and Maintain Connection (for xRDP)
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+        if: ${{ github.event_name == 'workflow_dispatch' }}  # Only if xRDP was set up
         shell: bash
         run: |
           # Reinstall Tailscale (for maintenance)
@@ -76,6 +76,7 @@ jobs:
               tailscaleStatus=$(tailscale status 2>&1)
               if [[ $tailscaleStatus != *"logged in"* ]]; then
                   echo "Tailscale connection lost or not logged in. Attempting to reconnect..."
+                  # Re-authenticate Tailscale.  Important: Use the SAME parameters as initial setup.
                   sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gha-runner-${{ github.run_id }} --accept-routes=false --accept-dns=false
               fi
               sleep 30
