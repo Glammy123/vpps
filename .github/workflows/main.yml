@@ -5,7 +5,7 @@ on: [push, workflow_dispatch]
 jobs:
   setup_and_maintain:  # Combined job
     runs-on: ubuntu-latest
-    timeout-minutes: 65  # Timeout applies to the entire job
+    timeout-minutes: 245  # Timeout applies to the entire job, set to slightly over 4 hours
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
@@ -32,7 +32,13 @@ jobs:
         tailscaleIP=$(tailscale ip -4)
         echo "=== Tailscale Connection Information ==="
         echo "IP Address: $tailscaleIP"
-        echo "Use 'tailscale status' to verify connection:"
+        echo "Username: ubuntu" # Default username for Ubuntu runners
+        echo "Password: <Use RDP client to enter password>" # Password is set as a secret
+        echo "`nTo connect via Remote Desktop Connection (or compatible RDP client):"
+        echo "  1. Open your Remote Desktop Connection tool."
+        echo "  2. Enter the IP Address shown above."
+        echo "  3. When prompted, use username 'ubuntu' and the password you set in the RDP_PASSWORD secret."
+        echo "`nUse 'tailscale status' to verify connection:"
         tailscale status
 
     - name: Install and Configure xRDP (Optional - for GUI access)
@@ -57,15 +63,15 @@ jobs:
           exit 1
         fi
 
-        # Maintain Tailscale Connection
-        echo "Maintaining Tailscale connection for xRDP for up to 60 minutes..."
+        # Maintain Tailscale Connection for 4 Hours
+        echo "Maintaining Tailscale connection for xRDP for up to 4 hours..."
         startTime=$(date +%s)
         while true; do
             currentTime=$(date +%s)
             elapsedTime=$((currentTime - startTime))
 
-            if [[ $elapsedTime -ge 3600 ]]; then  # 60 minutes
-                echo "60-minute timeout reached. Exiting."
+            if [[ $elapsedTime -ge 14400 ]]; then  # 4 hours = 14400 seconds
+                echo "4-hour timeout reached. Exiting."
                 break
             fi
 
