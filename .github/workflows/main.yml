@@ -50,27 +50,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 65
     steps:
-      - name: Reinstall Tailscale (for maintenance)
-        if: ${{ github.event_name == 'workflow_dispatch' }} # Only if xRDP was set up
+      - name: Reinstall Tailscale and Maintain Connection (for xRDP)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         shell: bash
         run: |
+          # Reinstall Tailscale (for maintenance)
           curl -fsSL https://tailscale.com/install.sh | sh
           if [ $? -ne 0 ]; then
             echo "Tailscale reinstallation failed."
             exit 1
           fi
 
-      - name: Maintain Tailscale Connection (for xRDP)
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        shell: bash
-        run: |
+          # Maintain Tailscale Connection
           echo "Maintaining Tailscale connection for xRDP for up to 60 minutes..."
           startTime=$(date +%s)
           while true; do
               currentTime=$(date +%s)
               elapsedTime=$((currentTime - startTime))
 
-              if [[ $elapsedTime -ge 3600 ]]; then
+              if [[ $elapsedTime -ge 3600 ]]; then  # 60 minutes
                   echo "60-minute timeout reached. Exiting."
                   break
               fi
