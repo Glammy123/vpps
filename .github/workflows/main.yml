@@ -7,76 +7,56 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - name: Install Tailscale
-      shell: pwsh  # Explicitly use PowerShell Core
+    - name: Install Tailscale via Winget
+      shell: pwsh
       run: |
-        # Download using a more robust method and check for success
-        try {
-          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-ipn-setup-latest.exe" -OutFile "tailscale-setup.exe" -UseBasicParsing
-        }
-        catch {
-          Write-Error "Failed to download Tailscale installer: $($_.Exception.Message)"
-          exit 1
-        }
-
-        # Verify that the file exists before attempting to install
-        if (-not (Test-Path -Path "tailscale-setup.exe")) {
-          Write-Error "Tailscale installer not found after download."
-          exit 1
-        }
-
-        # Silent install with logging (for debugging)
-        Start-Process -FilePath ".\tailscale-setup.exe" -ArgumentList "/S", "/log", "install.log" -Wait -PassThru
+        # Install Tailscale using Windows Package Manager
+        winget install --id Tailscale.Tailscale --silent --accept-package-agreements
         if ($LASTEXITCODE -ne 0) {
             Write-Error "Tailscale installation failed with exit code: $LASTEXITCODE"
-            # Optionally, upload the install.log as an artifact for further debugging:
-            # Get-ChildItem -Path "install.log" | ForEach-Object {
-            #     if (Test-Path $_.FullName) {
-            #         Write-Host "Uploading install log..."
-            #         # Requires: actions/upload-artifact@v3
-            #         New-Item -ItemType Directory -Force -Path artifacts
-            #         Copy-Item $_.FullName -Destination artifacts
-            #     }
-            # }
             exit 1
         }
 
     - name: Authenticate Tailscale
       shell: pwsh
       run: |
-           tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=github-runner-${{ github.run_id }}-${{ github.run_attempt }} --accept-routes=false --accept-dns=false
+        # Connect to Tailscale with ephemeral node
+        tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gha-runner-${{ github.run_id }} --ephemeral --accept-routes=false --accept-dns=false
       env:
         TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
 
-    - name: Enable RDP
-      shell: pwsh  # Consistent shell
+    - name: Configure RDP Access
+      shell: pwsh
       run: |
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server'-name "fDenyTSConnections" -Value 0
+        # Enable RDP with proper registry path
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
-        Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "P@ssw0rd!" -Force)
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
+        
+        # Create temporary admin user (consider using secrets for password in real scenarios)
+        $password = ConvertTo-SecureString "P@ssw0rd!" -AsPlainText -Force
+        New-LocalUser -Name "runneradmin" -Password $password -AccountNeverExpires
+        Add-LocalGroupMember -Group "Administrators" -Member "runneradmin"
 
-    - name: Get Tailscale IP and Print Instructions
+    - name: Display Connection Info
       shell: pwsh
       run: |
         $tailscaleIP = (tailscale ip -4)
-        Write-Host "Tailscale IP: $tailscaleIP"
-        Write-Host "Connect via RDP to: $tailscaleIP"
+        Write-Host "`n=== Remote Desktop Connection Information ==="
+        Write-Host "IP Address: $tailscaleIP"
         Write-Host "Username: runneradmin"
         Write-Host "Password: P@ssw0rd!"
-        Write-Host "You can also use 'tailscale status' on your local machine to find and copy the IP address."
+        Write-Host "`nUse 'tailscale status' to verify connection:"
         tailscale status
 
-    # Keep the workflow running & allow connections (with timeout)
-    - name: Keep workflow running & allow connections (with timeout)
+    - name: Maintain Session
       shell: pwsh
       run: |
-        Write-Host "Workflow will automatically terminate in 60 minutes."
-        Start-Sleep -Seconds 3600  # 60 minutes * 60 seconds
-      timeout-minutes: 70
+        Write-Host "Session will remain active for 60 minutes..."
+        Start-Sleep -Seconds 3600  # 1 hour timeout
+      timeout-minutes: 65
 
-    #Optional: add tailascale down(clean up) step after a fixed time.
-    - name: Tailscale down (cleanup)
+    - name: Disconnect Tailscale (Cleanup)
       if: always()
-      shell: pwsh # Consistent shell.
+      shell: pwsh
       run: tailscale down
