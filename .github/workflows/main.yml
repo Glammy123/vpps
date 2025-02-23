@@ -8,17 +8,48 @@ jobs:
 
     steps:
     - name: Install Tailscale
+      shell: pwsh  # Explicitly use PowerShell Core
       run: |
-        Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-ipn-setup-latest.exe" -OutFile "tailscale-setup.exe"
-        Start-Process -FilePath ".\tailscale-setup.exe" -ArgumentList "/S" -Wait # Silent install
+        # Download using a more robust method and check for success
+        try {
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-ipn-setup-latest.exe" -OutFile "tailscale-setup.exe" -UseBasicParsing
+        }
+        catch {
+          Write-Error "Failed to download Tailscale installer: $($_.Exception.Message)"
+          exit 1
+        }
+
+        # Verify that the file exists before attempting to install
+        if (-not (Test-Path -Path "tailscale-setup.exe")) {
+          Write-Error "Tailscale installer not found after download."
+          exit 1
+        }
+
+        # Silent install with logging (for debugging)
+        Start-Process -FilePath ".\tailscale-setup.exe" -ArgumentList "/S", "/log", "install.log" -Wait -PassThru
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Tailscale installation failed with exit code: $LASTEXITCODE"
+            # Optionally, upload the install.log as an artifact for further debugging:
+            # Get-ChildItem -Path "install.log" | ForEach-Object {
+            #     if (Test-Path $_.FullName) {
+            #         Write-Host "Uploading install log..."
+            #         # Requires: actions/upload-artifact@v3
+            #         New-Item -ItemType Directory -Force -Path artifacts
+            #         Copy-Item $_.FullName -Destination artifacts
+            #     }
+            # }
+            exit 1
+        }
 
     - name: Authenticate Tailscale
+      shell: pwsh
       run: |
            tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=github-runner-${{ github.run_id }}-${{ github.run_attempt }} --accept-routes=false --accept-dns=false
       env:
-        TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}  #  Use a Tailscale auth key (pre-authorized, recommended) or consider interactive login if necessary.
+        TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
 
     - name: Enable RDP
+      shell: pwsh  # Consistent shell
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server'-name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
@@ -26,6 +57,7 @@ jobs:
         Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "P@ssw0rd!" -Force)
 
     - name: Get Tailscale IP and Print Instructions
+      shell: pwsh
       run: |
         $tailscaleIP = (tailscale ip -4)
         Write-Host "Tailscale IP: $tailscaleIP"
@@ -35,14 +67,16 @@ jobs:
         Write-Host "You can also use 'tailscale status' on your local machine to find and copy the IP address."
         tailscale status
 
-    # Keep the workflow running so you can connect.  Add a timeout or a final cleanup step.
+    # Keep the workflow running & allow connections (with timeout)
     - name: Keep workflow running & allow connections (with timeout)
+      shell: pwsh
       run: |
         Write-Host "Workflow will automatically terminate in 60 minutes."
-        Start-Sleep -Seconds 3600  # 60 minutes * 60 seconds 
-      timeout-minutes: 70 # Set a timeout slightly *larger* than the sleep duration
+        Start-Sleep -Seconds 3600  # 60 minutes * 60 seconds
+      timeout-minutes: 70
 
     #Optional: add tailascale down(clean up) step after a fixed time.
-    #- name: Tailscale down (cleanup)
-    #  if: always()    # Run even if previous steps fail/timeout.
-    #  run: tailscale down
+    - name: Tailscale down (cleanup)
+      if: always()
+      shell: pwsh # Consistent shell.
+      run: tailscale down
