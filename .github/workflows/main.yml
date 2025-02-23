@@ -4,53 +4,60 @@ on: [push, workflow_dispatch]
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
 
     steps:
     - name: Install Tailscale
-      shell: powershell
       run: |
-        Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-ipn-setup-latest.exe" -OutFile "tailscale-setup.exe"
-        Start-Process -FilePath ".\tailscale-setup.exe" -ArgumentList "/S" -Wait  # Silent install
-        Start-Sleep -Seconds 10 # Give it some time to finish installation
-
-
-    - name: Authenticate Tailscale
-      shell: powershell
-      run: |
-        #Start tailscale service
-        Start-Service -Name "Tailscale"
-        # Authenticate using the Tailscale auth key (as a secret).  Much better than interactive login.
-        tailscale up --authkey ${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gh-runner-${{ github.run_id }} --advertise-exit-node=false --advertise-routes=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16  --accept-routes=true
+        curl -fsSL https://tailscale.com/install.sh | sh
+        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gh-runner-${{ github.run_id }} --accept-routes=true --advertise-routes=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+        sudo systemctl enable --now tailscaled
 
     - name: Get Tailscale IP
-      shell: powershell
       id: get-ip
       run: |
-        $tailscaleStatus = tailscale status --json
-        $tailscaleStatus = $tailscaleStatus | ConvertFrom-Json
-        $tailscaleIP = $tailscaleStatus.Self.TailscaleIPs[0]  # Get the first Tailscale IP (usually the relevant one)
-        Write-Host "Tailscale IP: $tailscaleIP"
-        echo "::set-output name=tailscale_ip::$tailscaleIP"
+        tailscale_status=$(tailscale status --json)
+        tailscale_ip=$(echo "$tailscale_status" | jq -r '.Self.TailscaleIPs[0]')
+        echo "Tailscale IP: $tailscale_ip"
+        echo "::set-output name=tailscale_ip::$tailscale_ip"
 
-
-    - name: Enable RDP and Set Firewall Rules
-      shell: powershell
+    - name: Install xRDP, XFCE, and dependencies
       run: |
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
-        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
-        Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "P@ssw0rd!" -Force)
-        net user runneradmin "P@ssw0rd!"  # Also set the password with net user (sometimes Set-LocalUser doesn't apply immediately)
+        sudo apt-get update
+        sudo apt-get install -y xrdp xorgxrdp xfce4 xfce4-goodies  # Install xRDP, Xorg backend, and XFCE
+        sudo adduser runneradmin
+        echo 'runneradmin:P@ssw0rd!' | sudo chpasswd
+        sudo usermod -aG sudo,adm runneradmin
+        sudo sed -i 's/^allowed_users=console/allowed_users=anybody/' /etc/X11/Xwrapper.config
+        echo "xfce4-session" | sudo tee /home/runneradmin/.xsession # Set XFCE as the default session for runneradmin
+        sudo chown runneradmin:runneradmin /home/runneradmin/.xsession  # Ensure correct ownership of .xsession
+        sudo chmod +x /home/runneradmin/.xsession       # make .xsession executable
 
+    - name: Configure xRDP
+      run: |
+        sudo sed -i 's/port=3389/port=3389/g' /etc/xrdp/xrdp.ini
+        # Further xRDP customization (optional, see below)
+        sudo systemctl restart xrdp
+        sudo systemctl enable xrdp
+        
+    - name: improve RDP performance
+      run: |
+        # Reduce color depth to improve performance over slower connections
+        sudo sed -i 's/MaxBPP=32/MaxBPP=16/g' /etc/xrdp/xrdp.ini
+        sudo sed -i 's/ColorDepth=32/ColorDepth=16/g' /etc/xrdp/xrdp.ini
+        # Disable sound redirection (if not needed)
+        sudo sed -i 's/EnableSound=true/EnableSound=false/g' /etc/xrdp/xrdp.ini
+
+         # Disable clipboard redirection(If not needed)
+        sudo sed -i 's/EnableClipboard=true/EnableClipboard=false/g' /etc/xrdp/xrdp.ini
+        sudo systemctl restart xrdp
     - name: Keep Workflow Alive
-      shell: pwsh # Use PowerShell Core for improved compatibility with `Start-Sleep`
       run: |
-        Write-Host "RDP to: ${{ steps.get-ip.outputs.tailscale_ip }}:3389"
-        Write-Host "Username: runneradmin"
-        Write-Host "Password: P@ssw0rd!"
-        Write-Host "Workflow running indefinitely.  Manually cancel the workflow to stop."
-        while ($true) {
-          Start-Sleep -Seconds 3600  # Sleep for 1 hour (3600 seconds) and then check again.  This keeps the job alive.
-          Write-Host "Still running..."
-        }
+        echo "RDP to: ${{ steps.get-ip.outputs.tailscale_ip }}:3389"
+        echo "Username: runneradmin"
+        echo "Password: P@ssw0rd!"
+        echo "Workflow running indefinitely.  Manually cancel the workflow to stop."
+        while true; do
+          sleep 3600
+          echo "Still running..."
+        done
