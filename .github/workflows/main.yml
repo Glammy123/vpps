@@ -25,32 +25,44 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y xrdp xorgxrdp xfce4 xfce4-goodies  # Install xRDP, Xorg backend, and XFCE
-        sudo adduser runneradmin
-        echo 'runneradmin:P@ssw0rd!' | sudo chpasswd
-        sudo usermod -aG sudo,adm runneradmin
+        # Check if the user 'runneradmin' exists before attempting to create it.
+        if ! id "runneradmin" &>/dev/null; then
+          sudo adduser runneradmin
+          echo 'runneradmin:P@ssw0rd!' | sudo chpasswd
+          sudo usermod -aG sudo,adm runneradmin
+        else
+          echo "User 'runneradmin' already exists.  Setting password and groups."
+          echo 'runneradmin:P@ssw0rd!' | sudo chpasswd  # Still set the password
+          sudo usermod -aG sudo,adm runneradmin # And ensure group membership
+        fi
         sudo sed -i 's/^allowed_users=console/allowed_users=anybody/' /etc/X11/Xwrapper.config
-        echo "xfce4-session" | sudo tee /home/runneradmin/.xsession # Set XFCE as the default session for runneradmin
-        sudo chown runneradmin:runneradmin /home/runneradmin/.xsession  # Ensure correct ownership of .xsession
-        sudo chmod +x /home/runneradmin/.xsession       # make .xsession executable
+        # Check for existing .xsession file before creating/overwriting
+        if [ ! -f /home/runneradmin/.xsession ]; then
+            echo "xfce4-session" | sudo tee /home/runneradmin/.xsession # Set XFCE
+            sudo chown runneradmin:runneradmin /home/runneradmin/.xsession
+            sudo chmod +x /home/runneradmin/.xsession
+        else
+            echo "File /home/runneradmin/.xsession already exists. Skipping creation."
+        fi
+
 
     - name: Configure xRDP
       run: |
         sudo sed -i 's/port=3389/port=3389/g' /etc/xrdp/xrdp.ini
-        # Further xRDP customization (optional, see below)
         sudo systemctl restart xrdp
         sudo systemctl enable xrdp
-        
-    - name: improve RDP performance
+
+    - name: Improve RDP performance
       run: |
-        # Reduce color depth to improve performance over slower connections
+        # Reduce color depth
         sudo sed -i 's/MaxBPP=32/MaxBPP=16/g' /etc/xrdp/xrdp.ini
         sudo sed -i 's/ColorDepth=32/ColorDepth=16/g' /etc/xrdp/xrdp.ini
         # Disable sound redirection (if not needed)
         sudo sed -i 's/EnableSound=true/EnableSound=false/g' /etc/xrdp/xrdp.ini
-
          # Disable clipboard redirection(If not needed)
         sudo sed -i 's/EnableClipboard=true/EnableClipboard=false/g' /etc/xrdp/xrdp.ini
         sudo systemctl restart xrdp
+
     - name: Keep Workflow Alive
       run: |
         echo "RDP to: ${{ steps.get-ip.outputs.tailscale_ip }}:3389"
