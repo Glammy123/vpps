@@ -8,31 +8,32 @@ jobs:
 
     steps:
     - name: Checkout Repository
-      uses: actions/checkout@v4 # Always checkout the code first.
+      uses: actions/checkout@v4
 
     - name: Install Tailscale (Chocolatey)
       shell: pwsh
       run: |
-        # Install Chocolatey (if not already installed) - more reliable package management
         Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-        # Check if Chocolatey is installed. Exit if not
         if (-not (Test-Path "$env:ChocolateyInstall\bin\choco.exe")) {
           Write-Error "Chocolatey installation failed."
           exit 1
         }
-        # Install Tailscale using Chocolatey.
         choco install tailscale --yes
         if ($LASTEXITCODE -ne 0) {
             Write-Error "Tailscale installation failed with exit code: $LASTEXITCODE"
             exit 1
         }
-        #Refresh environment variables after installing.  This is crucial.
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        Write-Host "Refreshed PATH: $($env:PATH)"
+        if (-not (Get-Command tailscale -ErrorAction SilentlyContinue)) {
+          Write-Error "Tailscale is not found in PATH after installation and refresh."
+          exit 1
+        }
+        Write-Host "Tailscale is found in the PATH."
 
     - name: Authenticate Tailscale
       shell: pwsh
       run: |
-        # Connect to Tailscale with ephemeral node
         tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gha-runner-${{ github.run_id }} --ephemeral --accept-routes=false --accept-dns=false
       env:
         TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
@@ -40,12 +41,9 @@ jobs:
     - name: Configure RDP Access
       shell: pwsh
       run: |
-        # Enable RDP with proper registry path
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
-
-        # Create temporary admin user (use a secret for the password!)
         $password = ConvertTo-SecureString "${{ secrets.RDP_PASSWORD }}" -AsPlainText -Force
         New-LocalUser -Name "runneradmin" -Password $password -AccountNeverExpires -Description "Temporary admin user for RDP access" | Out-Null
         Add-LocalGroupMember -Group "Administrators" -Member "runneradmin"
@@ -65,15 +63,14 @@ jobs:
       shell: pwsh
       run: |
         Write-Host "Session will remain active for 60 minutes..."
-        Start-Sleep -Seconds 3600  # 1 hour timeout
-      timeout-minutes: 65  # Workflow timeout (good practice to have a slightly longer timeout than the sleep)
+        Start-Sleep -Seconds 3600
+      timeout-minutes: 65
 
     - name: Disconnect Tailscale and Cleanup (Cleanup)
-      if: always() # Ensure cleanup always runs, even on failure
+      if: always()
       shell: pwsh
       run: |
         tailscale down
-        #Remove the user.
         try {
           Remove-LocalUser -Name "runneradmin" -ErrorAction Stop
         }
