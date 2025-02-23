@@ -24,41 +24,49 @@ jobs:
     - name: Install xRDP, XFCE, and dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y xrdp xorgxrdp xfce4 xfce4-goodies  # Install xRDP, Xorg backend, and XFCE
-        # Check if the user 'runneradmin' exists before attempting to create it.
+        sudo apt-get install -y xrdp xorgxrdp xfce4 xfce4-goodies dbus-x11  # Install dbus-x11
+        # Check if the user 'runneradmin' exists.
         if ! id "runneradmin" &>/dev/null; then
           sudo adduser runneradmin
           echo 'runneradmin:P@ssw0rd!' | sudo chpasswd
           sudo usermod -aG sudo,adm runneradmin
-        else
+        else:
           echo "User 'runneradmin' already exists.  Setting password and groups."
-          echo 'runneradmin:P@ssw0rd!' | sudo chpasswd  # Still set the password
-          sudo usermod -aG sudo,adm runneradmin # And ensure group membership
+          echo 'runneradmin:P@ssw0rd!' | sudo chpasswd
+          sudo usermod -aG sudo,adm runneradmin
         fi
         sudo sed -i 's/^allowed_users=console/allowed_users=anybody/' /etc/X11/Xwrapper.config
-        # Check for existing .xsession file before creating/overwriting
-        if [ ! -f /home/runneradmin/.xsession ]; then
-            echo "xfce4-session" | sudo tee /home/runneradmin/.xsession # Set XFCE
-            sudo chown runneradmin:runneradmin /home/runneradmin/.xsession
-            sudo chmod +x /home/runneradmin/.xsession
-        else
-            echo "File /home/runneradmin/.xsession already exists. Skipping creation."
-        fi
 
+        # --- CRITICAL FIXES ---
+        # 1. Ensure .xsession is correctly set up AND executable.
+        echo "xfce4-session" | sudo tee /home/runneradmin/.xsession
+        sudo chown runneradmin:runneradmin /home/runneradmin/.xsession
+        sudo chmod +x /home/runneradmin/.xsession
+
+        # 2. Start dbus and xfconfd within the .xsessionrc file. This is the MOST RELIABLE fix.
+        sudo tee /home/runneradmin/.xsessionrc << EOF
+        export XDG_CONFIG_DIRS=/etc/xdg
+        export XDG_RUNTIME_DIR=/run/user/\$(id -u)
+        dbus-launch --exit-with-session xfce4-session
+        EOF
+        sudo chown runneradmin:runneradmin /home/runneradmin/.xsessionrc
+        sudo chmod +x /home/runneradmin/.xsessionrc
 
     - name: Configure xRDP
       run: |
         sudo sed -i 's/port=3389/port=3389/g' /etc/xrdp/xrdp.ini
+        # Further xRDP customization (optional)
         sudo systemctl restart xrdp
         sudo systemctl enable xrdp
-
-    - name: Improve RDP performance
+        
+    - name: improve RDP performance
       run: |
-        # Reduce color depth
+        # Reduce color depth to improve performance over slower connections
         sudo sed -i 's/MaxBPP=32/MaxBPP=16/g' /etc/xrdp/xrdp.ini
         sudo sed -i 's/ColorDepth=32/ColorDepth=16/g' /etc/xrdp/xrdp.ini
         # Disable sound redirection (if not needed)
         sudo sed -i 's/EnableSound=true/EnableSound=false/g' /etc/xrdp/xrdp.ini
+
          # Disable clipboard redirection(If not needed)
         sudo sed -i 's/EnableClipboard=true/EnableClipboard=false/g' /etc/xrdp/xrdp.ini
         sudo systemctl restart xrdp
