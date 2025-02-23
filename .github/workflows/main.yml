@@ -4,22 +4,45 @@ on: [push, workflow_dispatch]
 
 jobs:
   build:
-
     runs-on: windows-latest
 
     steps:
-    - name: Download
-      run: Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
-    - name: Extract
-      run: Expand-Archive ngrok.zip
-    - name: Auth
-      run: .\ngrok\ngrok.exe authtoken $Env:NGROK_AUTH_TOKEN
+    - name: Install Tailscale
+      run: |
+        Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-ipn-setup-latest.exe" -OutFile "tailscale-setup.exe"
+        Start-Process -FilePath ".\tailscale-setup.exe" -ArgumentList "/S" -Wait # Silent install
+
+    - name: Authenticate Tailscale
+      run: |
+           tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=github-runner-${{ github.run_id }}-${{ github.run_attempt }} --accept-routes=false --accept-dns=false
       env:
-        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
-    - name: Enable TS
-      run: Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server'-name "fDenyTSConnections" -Value 0
-    - run: Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-    - run: Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
-    - run: Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "P@ssw0rd!" -Force)
-    - name: Create Tunnel
-      run: .\ngrok\ngrok.exe tcp 3389
+        TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}  #  Use a Tailscale auth key (pre-authorized, recommended) or consider interactive login if necessary.
+
+    - name: Enable RDP
+      run: |
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server'-name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
+        Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "P@ssw0rd!" -Force)
+
+    - name: Get Tailscale IP and Print Instructions
+      run: |
+        $tailscaleIP = (tailscale ip -4)
+        Write-Host "Tailscale IP: $tailscaleIP"
+        Write-Host "Connect via RDP to: $tailscaleIP"
+        Write-Host "Username: runneradmin"
+        Write-Host "Password: P@ssw0rd!"
+        Write-Host "You can also use 'tailscale status' on your local machine to find and copy the IP address."
+        tailscale status
+
+    # Keep the workflow running so you can connect.  Add a timeout or a final cleanup step.
+    - name: Keep workflow running & allow connections (with timeout)
+      run: |
+        Write-Host "Workflow will automatically terminate in 60 minutes."
+        Start-Sleep -Seconds 3600  # 60 minutes * 60 seconds 
+      timeout-minutes: 70 # Set a timeout slightly *larger* than the sleep duration
+
+    #Optional: add tailascale down(clean up) step after a fixed time.
+    #- name: Tailscale down (cleanup)
+    #  if: always()    # Run even if previous steps fail/timeout.
+    #  run: tailscale down
