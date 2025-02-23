@@ -1,11 +1,10 @@
-name: CI
+name: Persistent Tailscale Connection
 
-on: [push, workflow_dispatch]
+on: [workflow_dispatch]
 
 jobs:
   setup_and_maintain:
-    runs-on: ubuntu-latest
-    timeout-minutes: 245
+    runs-on: self-hosted  # Use a self-hosted runner for 24/7 operation
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
@@ -42,7 +41,6 @@ jobs:
         tailscale status
 
     - name: Install and Configure xRDP (Optional - for GUI access)
-      if: ${{ github.event_name == 'workflow_dispatch' }}
       shell: bash
       run: |
         sudo apt-get update
@@ -89,35 +87,17 @@ jobs:
         sudo sed -i 's/allowed_users=console/allowed_users=anybody/' /etc/X11/Xwrapper.config
         sudo sed -i 's/#xfce_session/xfce_session/' /etc/xrdp/startwm.sh
 
-    - name: Reinstall Tailscale and Maintain Connection (for xRDP)
-      if: ${{ github.event_name == 'workflow_dispatch' }}
+    - name: Maintain Tailscale Connection
       shell: bash
       run: |
-        # Reinstall Tailscale (for maintenance)
-        curl -fsSL https://tailscale.com/install.sh | sh
-        if [ $? -ne 0 ]; then
-          echo "Tailscale reinstallation failed."
-          exit 1
-        fi
-
-        # Maintain Tailscale Connection for 4 Hours
-        echo "Maintaining Tailscale connection for xRDP for up to 4 hours..."
-        startTime=$(date +%s)
+        echo "Maintaining Tailscale connection indefinitely..."
         while true; do
-            currentTime=$(date +%s)
-            elapsedTime=$((currentTime - startTime))
-
-            if [[ $elapsedTime -ge 14400 ]]; then  # 4 hours = 14400 seconds
-                echo "4-hour timeout reached. Exiting."
-                break
-            fi
-
             tailscaleStatus=$(tailscale status 2>&1)
             if [[ $tailscaleStatus != *"logged in"* ]]; then
                 echo "Tailscale connection lost or not logged in. Attempting to reconnect..."
                 sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gha-runner-${{ github.run_id }} --accept-routes=false --accept-dns=false
             fi
-            sleep 30
+            sleep 300  # Check connection every 5 minutes
         done
 
     - name: Disconnect Tailscale (Cleanup)
