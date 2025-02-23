@@ -4,76 +4,59 @@ on: [push, workflow_dispatch]
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest  # Changed to Ubuntu
 
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    - name: Install Tailscale (Chocolatey)
-      shell: pwsh
+    - name: Install Tailscale
+      shell: bash  # Use bash for Linux
       run: |
-        Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-        if (-not (Test-Path "$env:ChocolateyInstall\bin\choco.exe")) {
-          Write-Error "Chocolatey installation failed."
+        # Install Tailscale using the official script (most reliable method)
+        curl -fsSL https://tailscale.com/install.sh | sh
+        if [ $? -ne 0 ]; then
+          echo "Tailscale installation failed."
           exit 1
-        }
-        choco install tailscale --yes
-        if ($LASTEXITCODE -ne 0) {
-            Write-Error "Tailscale installation failed with exit code: $LASTEXITCODE"
-            exit 1
-        }
-        $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-        Write-Host "Refreshed PATH: $($env:PATH)"
-        if (-not (Get-Command tailscale -ErrorAction SilentlyContinue)) {
-          Write-Error "Tailscale is not found in PATH after installation and refresh."
-          exit 1
-        }
-        Write-Host "Tailscale is found in the PATH."
+        fi
 
     - name: Authenticate Tailscale
-      shell: pwsh
+      shell: bash
       run: |
-        tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gha-runner-${{ github.run_id }} --ephemeral --accept-routes=false --accept-dns=false
+        # Connect to Tailscale with ephemeral node
+        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gha-runner-${{ github.run_id }} --ephemeral --accept-routes=false --accept-dns=false
       env:
         TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
 
-    - name: Configure RDP Access
-      shell: pwsh
+    - name: Display Connection Info  # No RDP on Linux, but we can still get the IP
+      shell: bash
       run: |
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\' -Name "fDenyTSConnections" -Value 0
-        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
-        $password = ConvertTo-SecureString "${{ secrets.RDP_PASSWORD }}" -AsPlainText -Force
-        New-LocalUser -Name "runneradmin" -Password $password -AccountNeverExpires -Description "Temporary admin user for RDP access" | Out-Null
-        Add-LocalGroupMember -Group "Administrators" -Member "runneradmin"
-
-    - name: Display Connection Info
-      shell: pwsh
-      run: |
-        $tailscaleIP = (tailscale ip -4)
-        Write-Host "`n=== Remote Desktop Connection Information ==="
-        Write-Host "IP Address: $tailscaleIP"
-        Write-Host "Username: runneradmin"
-        Write-Host "Password:  <Use RDP client to enter password>"
-        Write-Host "`nUse 'tailscale status' to verify connection:"
+        tailscaleIP=$(tailscale ip -4)
+        echo "=== Tailscale Connection Information ==="
+        echo "IP Address: $tailscaleIP"
+        echo "Use 'tailscale status' to verify connection:"
         tailscale status
-
-    - name: Maintain Session
-      shell: pwsh
+    
+    - name: Install and Configure xRDP (Optional - for GUI access)
+      if: ${{ github.event_name == 'workflow_dispatch' }}  # Only run on manual trigger (for security)
+      shell: bash
       run: |
-        Write-Host "Session will remain active for 60 minutes..."
-        Start-Sleep -Seconds 3600
+        sudo apt-get update
+        sudo apt-get install -y xrdp
+        sudo systemctl enable xrdp --now
+        # Set a password for the ubuntu user.  Use a secret!
+        echo "ubuntu:${{ secrets.RDP_PASSWORD }}" | sudo chpasswd
+        # Note:  xrdp often runs on port 3389, but verify.  You might need additional firewall configuration.
+
+    - name: Maintain Session (Optional - only if you have a GUI setup)
+      if: ${{ github.event_name == 'workflow_dispatch' }} # and a persistent connection method
+      shell: bash
+      run: |
+        echo "Session will remain active for 60 minutes..."
+        sleep 3600  # 1 hour timeout
       timeout-minutes: 65
 
-    - name: Disconnect Tailscale and Cleanup (Cleanup)
+    - name: Disconnect Tailscale (Cleanup)
       if: always()
-      shell: pwsh
-      run: |
-        tailscale down
-        try {
-          Remove-LocalUser -Name "runneradmin" -ErrorAction Stop
-        }
-        catch {
-          Write-Warning "Failed to remove user: $($_.Exception.Message)"
-        }
+      shell: bash
+      run: sudo tailscale down
