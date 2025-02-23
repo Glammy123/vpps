@@ -22,7 +22,8 @@ jobs:
     - name: Authenticate Tailscale
       shell: bash
       run: |
-        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gha-runner-${{ github.run_id }} --exit-node --accept-routes=false --accept-dns=false
+        # Connect to Tailscale.  Minimal configuration.
+        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gha-runner-${{ github.run_id }} --accept-routes=false --accept-dns=false
       env:
         TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
 
