@@ -4,16 +4,15 @@ on: [push, workflow_dispatch]
 
 jobs:
   build:
-    runs-on: ubuntu-latest  # Changed to Ubuntu
+    runs-on: ubuntu-latest
 
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
     - name: Install Tailscale
-      shell: bash  # Use bash for Linux
+      shell: bash
       run: |
-        # Install Tailscale using the official script (most reliable method)
         curl -fsSL https://tailscale.com/install.sh | sh
         if [ $? -ne 0 ]; then
           echo "Tailscale installation failed."
@@ -23,12 +22,12 @@ jobs:
     - name: Authenticate Tailscale
       shell: bash
       run: |
-        # Connect to Tailscale with ephemeral node
-        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gha-runner-${{ github.run_id }} --ephemeral --accept-routes=false --accept-dns=false
+        # Connect to Tailscale WITHOUT --ephemeral, using --exit-node.
+        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gha-runner-${{ github.run_id }} --exit-node --accept-routes=false --accept-dns=false
       env:
         TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
 
-    - name: Display Connection Info  # No RDP on Linux, but we can still get the IP
+    - name: Display Connection Info
       shell: bash
       run: |
         tailscaleIP=$(tailscale ip -4)
@@ -36,24 +35,22 @@ jobs:
         echo "IP Address: $tailscaleIP"
         echo "Use 'tailscale status' to verify connection:"
         tailscale status
-    
+
     - name: Install and Configure xRDP (Optional - for GUI access)
-      if: ${{ github.event_name == 'workflow_dispatch' }}  # Only run on manual trigger (for security)
+      if: ${{ github.event_name == 'workflow_dispatch' }}
       shell: bash
       run: |
         sudo apt-get update
         sudo apt-get install -y xrdp
         sudo systemctl enable xrdp --now
-        # Set a password for the ubuntu user.  Use a secret!
         echo "ubuntu:${{ secrets.RDP_PASSWORD }}" | sudo chpasswd
-        # Note:  xrdp often runs on port 3389, but verify.  You might need additional firewall configuration.
 
     - name: Maintain Session (Optional - only if you have a GUI setup)
-      if: ${{ github.event_name == 'workflow_dispatch' }} # and a persistent connection method
+      if: ${{ github.event_name == 'workflow_dispatch' }}
       shell: bash
       run: |
         echo "Session will remain active for 60 minutes..."
-        sleep 3600  # 1 hour timeout
+        sleep 3600
       timeout-minutes: 65
 
     - name: Disconnect Tailscale (Cleanup)
