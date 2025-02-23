@@ -7,15 +7,27 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - name: Install Tailscale via Winget
+    - name: Checkout Repository
+      uses: actions/checkout@v4 # Always checkout the code first.
+
+    - name: Install Tailscale (Chocolatey)
       shell: pwsh
       run: |
-        # Install Tailscale using Windows Package Manager
-        winget install --id Tailscale.Tailscale --silent --accept-package-agreements
+        # Install Chocolatey (if not already installed) - more reliable package management
+        Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+        # Check if Chocolatey is installed. Exit if not
+        if (-not (Test-Path "$env:ChocolateyInstall\bin\choco.exe")) {
+          Write-Error "Chocolatey installation failed."
+          exit 1
+        }
+        # Install Tailscale using Chocolatey.
+        choco install tailscale --yes
         if ($LASTEXITCODE -ne 0) {
             Write-Error "Tailscale installation failed with exit code: $LASTEXITCODE"
             exit 1
         }
+        #Refresh environment variables after installing.  This is crucial.
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
     - name: Authenticate Tailscale
       shell: pwsh
@@ -32,10 +44,10 @@ jobs:
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
-        
-        # Create temporary admin user (consider using secrets for password in real scenarios)
-        $password = ConvertTo-SecureString "P@ssw0rd!" -AsPlainText -Force
-        New-LocalUser -Name "runneradmin" -Password $password -AccountNeverExpires
+
+        # Create temporary admin user (use a secret for the password!)
+        $password = ConvertTo-SecureString "${{ secrets.RDP_PASSWORD }}" -AsPlainText -Force
+        New-LocalUser -Name "runneradmin" -Password $password -AccountNeverExpires -Description "Temporary admin user for RDP access" | Out-Null
         Add-LocalGroupMember -Group "Administrators" -Member "runneradmin"
 
     - name: Display Connection Info
@@ -45,7 +57,7 @@ jobs:
         Write-Host "`n=== Remote Desktop Connection Information ==="
         Write-Host "IP Address: $tailscaleIP"
         Write-Host "Username: runneradmin"
-        Write-Host "Password: P@ssw0rd!"
+        Write-Host "Password:  <Use RDP client to enter password>"
         Write-Host "`nUse 'tailscale status' to verify connection:"
         tailscale status
 
@@ -54,9 +66,17 @@ jobs:
       run: |
         Write-Host "Session will remain active for 60 minutes..."
         Start-Sleep -Seconds 3600  # 1 hour timeout
-      timeout-minutes: 65
+      timeout-minutes: 65  # Workflow timeout (good practice to have a slightly longer timeout than the sleep)
 
-    - name: Disconnect Tailscale (Cleanup)
-      if: always()
+    - name: Disconnect Tailscale and Cleanup (Cleanup)
+      if: always() # Ensure cleanup always runs, even on failure
       shell: pwsh
-      run: tailscale down
+      run: |
+        tailscale down
+        #Remove the user.
+        try {
+          Remove-LocalUser -Name "runneradmin" -ErrorAction Stop
+        }
+        catch {
+          Write-Warning "Failed to remove user: $($_.Exception.Message)"
+        }
