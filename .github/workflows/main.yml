@@ -22,7 +22,6 @@ jobs:
     - name: Authenticate Tailscale
       shell: bash
       run: |
-        # Connect to Tailscale WITHOUT --ephemeral, using --exit-node.
         sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gha-runner-${{ github.run_id }} --exit-node --accept-routes=false --accept-dns=false
       env:
         TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
