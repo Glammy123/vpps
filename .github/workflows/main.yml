@@ -21,29 +21,42 @@ jobs:
         echo "Tailscale IP: $tailscale_ip"
         echo "::set-output name=tailscale_ip::$tailscale_ip"
 
-    - name: Install xRDP, XFCE, and dependencies
+    - name: Install xRDP, XFCE, and dependencies (with extra cleanup)
       run: |
         sudo apt-get update
-        sudo apt-get install -y xrdp xorgxrdp xfce4 xfce4-goodies dbus-x11  # Install dbus-x11
-        # Check if the user 'runneradmin' exists.
+        # Purge any existing xRDP/XFCE installations to ensure a clean slate
+        sudo apt-get purge -y xrdp xorgxrdp xfce4 xfce4-goodies dbus-x11 || true
+        sudo apt-get autoremove -y --purge
+        sudo apt-get install -y xrdp xorgxrdp xfce4 xfce4-goodies dbus-x11
+
+        # --- User Account and Password Handling (Robust) ---
+        # Check if user exists.
         if ! id "runneradmin" &>/dev/null; then
           sudo adduser runneradmin
-          echo 'runneradmin:P@ssw0rd!' | sudo chpasswd
-          sudo usermod -aG sudo,adm runneradmin
-        else:
-          echo "User 'runneradmin' already exists.  Setting password and groups."
-          echo 'runneradmin:P@ssw0rd!' | sudo chpasswd
-          sudo usermod -aG sudo,adm runneradmin
+        else
+          echo "User 'runneradmin' already exists."
         fi
+
+        # Set the password using a more reliable method (expect).
+        sudo apt-get install -y expect
+        sudo expect << EOF
+        spawn passwd runneradmin
+        expect "New password:"
+        send "P@ssw0rd!\r"
+        expect "Retype new password:"
+        send "P@ssw0rd!\r"
+        expect eof
+        EOF
+
+        sudo usermod -aG sudo,adm runneradmin
+
         sudo sed -i 's/^allowed_users=console/allowed_users=anybody/' /etc/X11/Xwrapper.config
 
-        # --- CRITICAL FIXES ---
-        # 1. Ensure .xsession is correctly set up AND executable.
+        # --- .xsession and .xsessionrc setup ---
         echo "xfce4-session" | sudo tee /home/runneradmin/.xsession
         sudo chown runneradmin:runneradmin /home/runneradmin/.xsession
         sudo chmod +x /home/runneradmin/.xsession
 
-        # 2. Start dbus and xfconfd within the .xsessionrc file. This is the MOST RELIABLE fix.
         sudo tee /home/runneradmin/.xsessionrc << EOF
         export XDG_CONFIG_DIRS=/etc/xdg
         export XDG_RUNTIME_DIR=/run/user/\$(id -u)
@@ -52,10 +65,12 @@ jobs:
         sudo chown runneradmin:runneradmin /home/runneradmin/.xsessionrc
         sudo chmod +x /home/runneradmin/.xsessionrc
 
-    - name: Configure xRDP
+
+    - name: Configure xRDP (Check sesman.ini)
       run: |
         sudo sed -i 's/port=3389/port=3389/g' /etc/xrdp/xrdp.ini
-        # Further xRDP customization (optional)
+        # Check for a common misconfiguration in sesman.ini (Security section)
+        sudo sed -i 's/SecurityLayer=negotiate/SecurityLayer=rdp/g' /etc/xrdp/sesman.ini
         sudo systemctl restart xrdp
         sudo systemctl enable xrdp
         
