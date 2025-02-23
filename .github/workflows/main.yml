@@ -42,17 +42,26 @@ jobs:
         sudo apt-get install -y xrdp
         sudo systemctl enable xrdp --now
         echo "ubuntu:${{ secrets.RDP_PASSWORD }}" | sudo chpasswd
-        # Configure xRDP to use a specific display manager and session
-        sudo sed -i 's/allowed_users=console/allowed_users=anybody/' /etc/X11/Xwrapper.config # Allow any user
-        sudo sed -i 's/#xfce_session/xfce_session/' /etc/xrdp/startwm.sh #Ensure xfce4 session
+        sudo sed -i 's/allowed_users=console/allowed_users=anybody/' /etc/X11/Xwrapper.config
+        sudo sed -i 's/#xfce_session/xfce_session/' /etc/xrdp/startwm.sh
 
   maintain_xrdp:
-    needs: setup  # Depends on the 'setup' job
+    needs: setup
     runs-on: ubuntu-latest
     timeout-minutes: 65
     steps:
+      - name: Reinstall Tailscale (for maintenance)
+        if: ${{ github.event_name == 'workflow_dispatch' }} # Only if xRDP was set up
+        shell: bash
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          if [ $? -ne 0 ]; then
+            echo "Tailscale reinstallation failed."
+            exit 1
+          fi
+
       - name: Maintain Tailscale Connection (for xRDP)
-        if: ${{ github.event_name == 'workflow_dispatch' }} # Condition on the STEP
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         shell: bash
         run: |
           echo "Maintaining Tailscale connection for xRDP for up to 60 minutes..."
@@ -61,7 +70,7 @@ jobs:
               currentTime=$(date +%s)
               elapsedTime=$((currentTime - startTime))
 
-              if [[ $elapsedTime -ge 3600 ]]; then  # 60 minutes
+              if [[ $elapsedTime -ge 3600 ]]; then
                   echo "60-minute timeout reached. Exiting."
                   break
               fi
@@ -75,6 +84,6 @@ jobs:
           done
 
       - name: Disconnect Tailscale (Cleanup)
-        if: always() # Always disconnect, regardless of manual trigger
+        if: always()
         shell: bash
         run: sudo tailscale down
