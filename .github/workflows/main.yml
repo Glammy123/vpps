@@ -35,7 +35,7 @@ jobs:
         tailscale status
 
     - name: Install and Configure xRDP (Optional - for GUI access)
-      if: ${{ github.event_name == 'workflow_dispatch' }}
+      if: ${{ github.event_name == 'workflow_dispatch' }}  # Only on manual trigger
       shell: bash
       run: |
         sudo apt-get update
@@ -47,9 +47,9 @@ jobs:
     needs: setup  # Depends on the 'setup' job
     runs-on: ubuntu-latest
     timeout-minutes: 65
-    if: ${{ github.event_name == 'workflow_dispatch' }} # Only maintain if xRDP was installed
     steps:
       - name: Maintain Tailscale Connection (for xRDP)
+        if: ${{ github.event_name == 'workflow_dispatch' }} # Condition on the STEP
         shell: bash
         run: |
           echo "Maintaining Tailscale connection for xRDP for up to 60 minutes..."
@@ -58,21 +58,20 @@ jobs:
               currentTime=$(date +%s)
               elapsedTime=$((currentTime - startTime))
 
-              if [[ $elapsedTime -ge 3600 ]]; then  # 60 minutes * 60 seconds/minute
+              if [[ $elapsedTime -ge 3600 ]]; then  # 60 minutes
                   echo "60-minute timeout reached. Exiting."
                   break
               fi
 
-              # Check Tailscale status
-              tailscaleStatus=$(tailscale status 2>&1) # Capture both stdout and stderr
+              tailscaleStatus=$(tailscale status 2>&1)
               if [[ $tailscaleStatus != *"logged in"* ]]; then
                   echo "Tailscale connection lost or not logged in. Attempting to reconnect..."
                   sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gha-runner-${{ github.run_id }} --accept-routes=false --accept-dns=false
               fi
-              sleep 30  # Check every 30 seconds
+              sleep 30
           done
 
       - name: Disconnect Tailscale (Cleanup)
-        if: always()
+        if: always() # Always disconnect, regardless of manual trigger
         shell: bash
         run: sudo tailscale down
