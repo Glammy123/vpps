@@ -3,9 +3,9 @@ name: CI
 on: [push, workflow_dispatch]
 
 jobs:
-  setup_and_maintain:  # Combined job
+  setup_and_maintain:
     runs-on: ubuntu-latest
-    timeout-minutes: 245  # Timeout applies to the entire job, set to slightly over 4 hours
+    timeout-minutes: 245
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
@@ -42,18 +42,54 @@ jobs:
         tailscale status
 
     - name: Install and Configure xRDP (Optional - for GUI access)
-      if: ${{ github.event_name == 'workflow_dispatch' }}  # Only on manual trigger
+      if: ${{ github.event_name == 'workflow_dispatch' }}
       shell: bash
       run: |
         sudo apt-get update
         sudo apt-get install -y xrdp
         sudo systemctl enable xrdp --now
-        echo "ubuntu:${{ secrets.RDP_PASSWORD }}" | sudo chpasswd
+
+        # Debugging & Fix Attempts for chpasswd Error:
+        echo "Attempting to set password for ubuntu user..."
+
+        # 1. Verify sudo is working (basic command)
+        sudo whoami
+        if [ $? -ne 0 ]; then
+          echo "Error: sudo command failed. Permissions issue?"
+          exit 1
+        fi
+        echo "sudo command successful."
+
+        # 2. Try forcing password change with --force
+        echo "ubuntu:${{ secrets.RDP_PASSWORD }}" | sudo chpasswd --force
+        if [ $? -eq 0 ]; then
+          echo "Password changed successfully (with --force)."
+        else
+          echo "Password change failed (with --force), trying -f (short flag)."
+          # 3. Try forcing with short flag -f
+          echo "ubuntu:${{ secrets.RDP_PASSWORD }}" | sudo chpasswd -f
+          if [ $? -eq 0 ]; then
+            echo "Password changed successfully (with -f)."
+          else
+            echo "Password change failed (with -f). Trying without force..."
+             # 4. Try without force again (just in case)
+            echo "ubuntu:${{ secrets.RDP_PASSWORD }}" | sudo chpasswd
+            if [ $? -eq 0 ]; then
+              echo "Password changed successfully (without force - weird)."
+            else
+              echo "Password change failed AGAIN (without force).  Investigate PAM or permissions."
+              cat /var/log/auth.log # Check auth logs for clues if available
+              exit 1 # Exit if all attempts fail
+            fi
+          fi
+        fi
+
+
         sudo sed -i 's/allowed_users=console/allowed_users=anybody/' /etc/X11/Xwrapper.config
         sudo sed -i 's/#xfce_session/xfce_session/' /etc/xrdp/startwm.sh
 
     - name: Reinstall Tailscale and Maintain Connection (for xRDP)
-      if: ${{ github.event_name == 'workflow_dispatch' }}  # Only on manual trigger
+      if: ${{ github.event_name == 'workflow_dispatch' }}
       shell: bash
       run: |
         # Reinstall Tailscale (for maintenance)
