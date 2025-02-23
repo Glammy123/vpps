@@ -42,6 +42,9 @@ jobs:
         sudo apt-get install -y xrdp
         sudo systemctl enable xrdp --now
         echo "ubuntu:${{ secrets.RDP_PASSWORD }}" | sudo chpasswd
+        # Configure xRDP to use a specific display manager and session
+        sudo sed -i 's/allowed_users=console/allowed_users=anybody/' /etc/X11/Xwrapper.config # Allow any user
+        sudo sed -i 's/#xfce_session/xfce_session/' /etc/xrdp/startwm.sh #Ensure xfce4 session
 
   maintain_xrdp:
     needs: setup  # Depends on the 'setup' job
