@@ -4,95 +4,22 @@ on: [push, workflow_dispatch]
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+
+    runs-on: windows-latest
 
     steps:
-    - name: Install Tailscale
-      run: |
-        curl -fsSL https://tailscale.com/install.sh | sh
-        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gh-runner-${{ github.run_id }} --accept-routes=true --advertise-routes=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
-        sudo systemctl enable --now tailscaled
-
-    - name: Get Tailscale IP
-      id: get-ip
-      run: |
-        tailscale_status=$(tailscale status --json)
-        tailscale_ip=$(echo "$tailscale_status" | jq -r '.Self.TailscaleIPs[0]')
-        echo "Tailscale IP: $tailscale_ip"
-        echo "::set-output name=tailscale_ip::$tailscale_ip"
-
-    - name: Install xRDP, XFCE, and dependencies (with extra cleanup)
-      run: |
-        sudo apt-get update
-        # Purge any existing xRDP/XFCE installations to ensure a clean slate
-        sudo apt-get purge -y xrdp xorgxrdp xfce4 xfce4-goodies dbus-x11 || true
-        sudo apt-get autoremove -y --purge
-        sudo apt-get install -y xrdp xorgxrdp xfce4 xfce4-goodies dbus-x11
-
-        # --- User Account and Password Handling (Robust) ---
-        # Check if user exists.
-        if ! id "runneradmin" &>/dev/null; then
-          sudo adduser runneradmin
-        else
-          echo "User 'runneradmin' already exists."
-        fi
-
-        # Set the password using a more reliable method (expect).
-        sudo apt-get install -y expect
-        sudo expect << EOF
-        spawn passwd runneradmin
-        expect "New password:"
-        send "P@ssw0rd!\r"
-        expect "Retype new password:"
-        send "P@ssw0rd!\r"
-        expect eof
-        EOF
-
-        sudo usermod -aG sudo,adm runneradmin
-
-        sudo sed -i 's/^allowed_users=console/allowed_users=anybody/' /etc/X11/Xwrapper.config
-
-        # --- .xsession and .xsessionrc setup ---
-        echo "xfce4-session" | sudo tee /home/runneradmin/.xsession
-        sudo chown runneradmin:runneradmin /home/runneradmin/.xsession
-        sudo chmod +x /home/runneradmin/.xsession
-
-        sudo tee /home/runneradmin/.xsessionrc << EOF
-        export XDG_CONFIG_DIRS=/etc/xdg
-        export XDG_RUNTIME_DIR=/run/user/\$(id -u)
-        dbus-launch --exit-with-session xfce4-session
-        EOF
-        sudo chown runneradmin:runneradmin /home/runneradmin/.xsessionrc
-        sudo chmod +x /home/runneradmin/.xsessionrc
-
-
-    - name: Configure xRDP (Check sesman.ini)
-      run: |
-        sudo sed -i 's/port=3389/port=3389/g' /etc/xrdp/xrdp.ini
-        # Check for a common misconfiguration in sesman.ini (Security section)
-        sudo sed -i 's/SecurityLayer=negotiate/SecurityLayer=rdp/g' /etc/xrdp/sesman.ini
-        sudo systemctl restart xrdp
-        sudo systemctl enable xrdp
-        
-    - name: improve RDP performance
-      run: |
-        # Reduce color depth to improve performance over slower connections
-        sudo sed -i 's/MaxBPP=32/MaxBPP=16/g' /etc/xrdp/xrdp.ini
-        sudo sed -i 's/ColorDepth=32/ColorDepth=16/g' /etc/xrdp/xrdp.ini
-        # Disable sound redirection (if not needed)
-        sudo sed -i 's/EnableSound=true/EnableSound=false/g' /etc/xrdp/xrdp.ini
-
-         # Disable clipboard redirection(If not needed)
-        sudo sed -i 's/EnableClipboard=true/EnableClipboard=false/g' /etc/xrdp/xrdp.ini
-        sudo systemctl restart xrdp
-
-    - name: Keep Workflow Alive
-      run: |
-        echo "RDP to: ${{ steps.get-ip.outputs.tailscale_ip }}:3389"
-        echo "Username: runneradmin"
-        echo "Password: P@ssw0rd!"
-        echo "Workflow running indefinitely.  Manually cancel the workflow to stop."
-        while true; do
-          sleep 3600
-          echo "Still running..."
-        done
+    - name: Download
+      run: Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
+    - name: Extract
+      run: Expand-Archive ngrok.zip
+    - name: Auth
+      run: .\ngrok\ngrok.exe authtoken $Env:NGROK_AUTH_TOKEN
+      env:
+        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+    - name: Enable TS
+      run: Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server'-name "fDenyTSConnections" -Value 0
+    - run: Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+    - run: Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
+    - run: Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "P@ssw0rd!" -Force)
+    - name: Create Tunnel
+      run: .\ngrok\ngrok.exe tcp 3389
